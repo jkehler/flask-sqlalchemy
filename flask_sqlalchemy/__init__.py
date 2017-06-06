@@ -27,6 +27,7 @@ from sqlalchemy import event, inspect, orm
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.declarative import DeclarativeMeta, declarative_base, \
     declared_attr
+from sqlalchemy.schema import MetaData
 from sqlalchemy.orm.exc import UnmappedClassError
 from sqlalchemy.orm.session import Session as SessionBase
 
@@ -49,10 +50,10 @@ before_models_committed = _signals.signal('before-models-committed')
 
 def _make_table(db):
     def _make_table(*args, **kwargs):
-        if len(args) > 1 and isinstance(args[1], db.Column):
-            args = (args[0], db.metadata) + args[1:]
         info = kwargs.pop('info', None) or {}
         info.setdefault('bind_key', None)
+        if len(args) > 1 and isinstance(args[1], db.Column):
+            args = (args[0], db.get_metadata(bind=info['bind_key'])) + args[1:]
         kwargs['info'] = info
         return sqlalchemy.Table(*args, **kwargs)
     return _make_table
@@ -599,6 +600,10 @@ class _BoundDeclarativeMeta(DeclarativeMeta):
 
     def __init__(self, name, bases, d):
         bind_key = d.pop('__bind_key__', None) or getattr(self, '__bind_key__', None)
+        if bind_key:
+            if bind_key not in self._metadata:
+                self._metadata[bind_key] = MetaData()
+            self.metadata = self._metadata[bind_key]
         DeclarativeMeta.__init__(self, name, bases, d)
 
         if bind_key is not None and hasattr(self, '__table__'):
@@ -743,6 +748,7 @@ class SQLAlchemy(object):
         self.use_native_unicode = use_native_unicode
         self.Query = query_class
         self.session = self.create_scoped_session(session_options)
+        model_class._metadata = {}
         self.Model = self.make_declarative_base(model_class, metadata)
         self._engine_lock = Lock()
         self.app = app
@@ -750,6 +756,12 @@ class SQLAlchemy(object):
 
         if app is not None:
             self.init_app(app)
+
+    def get_metadata(self, bind=None):
+        if not bind:
+            return self.metadata
+        if bind not in self.Model._metadata:
+            self.Model._metadata[bind] = MetaData()
 
     @property
     def metadata(self):
